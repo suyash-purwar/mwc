@@ -19,7 +19,7 @@ int main(int argc, char *argv[]) {
 
     const long word_count = mwc(file_path);
 
-    printf("Word count is: %ld", word_count);
+    printf("Word count is: %ld\n", word_count);
 
     return 0;
 }

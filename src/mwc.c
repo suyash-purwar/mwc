@@ -9,7 +9,7 @@
 #include "cores.h"
 #include "mwc.h"
 
-#define READ_BUFFER_SIZE 1000
+#define READ_BUFFER_SIZE 4096
 
 long file_size(const char *filepath) {
     struct stat file_stat;
@@ -27,9 +27,6 @@ long count_words(const char *buffer, size_t read_size, const char prev_character
 
         if (isspace(character)) {
             inside_a_word = 0;
-
-            if (i == read_size - 1)
-                count++;
         } else {
             if (inside_a_word == 0) {
                 count++;
@@ -38,7 +35,7 @@ long count_words(const char *buffer, size_t read_size, const char prev_character
         }
     }
 
-    if (offset != 0 && isspace(prev_character))
+    if (buffer[0] != ' ' && offset != 0 && !isspace(prev_character))
         count--;
 
     return count;
@@ -72,7 +69,6 @@ void* worker(void *worker_arg) {
     if (offset != 0) {
         fseek(args->file, offset - 1, SEEK_SET);
         pread(fd, &prev_buffer_character, 1, offset - 1);
-        // printf("%c, %ld\n", prev_buffer_character, offset);
     }
 
     fseek(args->file, offset, SEEK_SET);
@@ -134,9 +130,6 @@ long mwc(const char *file_path) {
 
     const int file_chunk_size = floor(fsize / cores);
     const int last_chunk_size = file_chunk_size + fsize % cores;
-
-    printf("file size: %ld, regular chunk: %d, last chunk: %d\n", fsize, file_chunk_size, last_chunk_size);
-
 
     off_t offset = 0;
 
