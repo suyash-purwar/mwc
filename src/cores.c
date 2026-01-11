@@ -7,9 +7,7 @@
 #include <unistd.h>
 #endif
 
-int cpu_cores_count()
-{
-    return 1;
+int cpu_cores_count() {
 #ifdef WIN32
     SYSTEM_INFO sysinfo;
     GetSystemInfo(&sysinfo);

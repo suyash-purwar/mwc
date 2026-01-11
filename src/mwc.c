@@ -1,7 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
-#include <string.h>
 #include <math.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -10,54 +9,29 @@
 #include "cores.h"
 #include "mwc.h"
 
-#define READ_BUFFER_SIZE 64000
+#define READ_BUFFER_SIZE 1000
 
-long file_size(char *filepath)
-{
+long file_size(const char *filepath) {
     struct stat file_stat;
     stat(filepath, &file_stat);
 
     return file_stat.st_size;
 }
 
-int validate_input(int argc, char *argv[])
-{
-    if (argc >= 2 && strlen(argv[1]) > 0)
-    {
-        printf("Input file path in not present.\n");
-        return 0;
-    }
-
-    return -1;
-}
-
-/**
- * Buffer 0: |suyash says hell|
- * Buffer 1: |o! krish says fu|
- * Buffer 2: |ck you to him!! |
- * Buffer 3: |Suyash is mad!!!|
- * Buffer 4: | What to now?   |
- */
-long count_words(char *buffer, char prev_character, off_t offset)
-{
+long count_words(const char *buffer, size_t read_size, const char prev_character, const off_t offset) {
     char inside_a_word = 0;
     long count = 0;
 
-    for (int i = 0; i < READ_BUFFER_SIZE; i++)
-    {
-        char character = buffer[i];
+    for (int i = 0; i < read_size; i++) {
+        const char character = buffer[i];
 
-        if (character == '\0')
-            break;
-
-        if (isspace(character))
-        {
+        if (isspace(character)) {
             inside_a_word = 0;
-        }
-        else
-        {
-            if (inside_a_word == 0)
-            {
+
+            if (i == read_size - 1)
+                count++;
+        } else {
+            if (inside_a_word == 0) {
                 count++;
                 inside_a_word = 1;
             }
@@ -81,31 +55,37 @@ long count_words(char *buffer, char prev_character, off_t offset)
  * bytes_read += bytes_to_read
  */
 
-void *worker(void *worker_arg)
-{
-    FileChunkData *args = (FileChunkData *)worker_arg;
+void* worker(void *worker_arg) {
+    const FileChunkData *args = (FileChunkData *) worker_arg;
 
     char buffer[READ_BUFFER_SIZE];
-    char prev_buffer_character = ' ';
     size_t bytes_read = 0;
-    long word_count = 0;
+    long* word_count = calloc(1, sizeof(long));
 
     FILE *file = args->file;
     off_t offset = args->offset;
-    ssize_t chunk_size = args->size;
+    const ssize_t chunk_size = args->size;
+    const int fd = fileno(file);
+
+    char prev_buffer_character;
+
+    if (offset != 0) {
+        fseek(args->file, offset - 1, SEEK_SET);
+        pread(fd, &prev_buffer_character, 1, offset - 1);
+        // printf("%c, %ld\n", prev_buffer_character, offset);
+    }
 
     fseek(args->file, offset, SEEK_SET);
 
-    while (bytes_read < chunk_size)
-    {
+    while (bytes_read < chunk_size) {
         size_t remaining_bytes_to_be_ready = chunk_size - bytes_read;
-        size_t bytes_to_read = remaining_bytes_to_be_ready > READ_BUFFER_SIZE ? READ_BUFFER_SIZE : remaining_bytes_to_be_ready;
+        size_t bytes_to_read = remaining_bytes_to_be_ready > READ_BUFFER_SIZE
+                                   ? READ_BUFFER_SIZE
+                                   : remaining_bytes_to_be_ready;
 
-        int fd = fileno(file);
-        printf("File Descriptor: %d\n", fd);
         pread(fd, buffer, bytes_to_read, offset);
 
-        word_count += count_words(buffer, prev_buffer_character, offset);
+        *word_count += count_words(buffer, bytes_to_read, prev_buffer_character, offset);
 
         offset += bytes_to_read;
         bytes_read += bytes_to_read;
@@ -114,12 +94,11 @@ void *worker(void *worker_arg)
 
     free(worker_arg);
 
-    return (void *)word_count;
+    return word_count;
 }
 
-pthread_t start_worker_thread(FILE *file, off_t offset, ssize_t size)
-{
-    FileChunkData *worker_data = (FileChunkData *)malloc(sizeof(FileChunkData));
+pthread_t start_worker_thread(FILE *file, off_t offset, ssize_t size) {
+    FileChunkData *worker_data = malloc(sizeof(FileChunkData));
 
     worker_data->file = file;
     worker_data->offset = offset;
@@ -127,13 +106,11 @@ pthread_t start_worker_thread(FILE *file, off_t offset, ssize_t size)
 
     pthread_t thread;
     pthread_attr_t thread_attr;
-    void *thread_result;
 
     pthread_attr_init(&thread_attr);
     pthread_attr_setdetachstate(&thread_attr, PTHREAD_CREATE_JOINABLE);
 
-    if (pthread_create(&thread, &thread_attr, worker, (void *)worker_data))
-    {
+    if (pthread_create(&thread, &thread_attr, worker, worker_data)) {
         perror("Thread creation failed.");
         exit(-1);
     }
@@ -141,48 +118,46 @@ pthread_t start_worker_thread(FILE *file, off_t offset, ssize_t size)
     return thread;
 }
 
-int mwc(char *file_path)
-{
-    FILE *file = fopen(file_path, O_RDONLY);
-    int cores = cpu_cores_count();
-    long fsize = file_size(file_path);
+long mwc(const char *file_path) {
+    FILE *file = fopen(file_path, "r");
+
+    if (file == NULL) {
+        perror("Failed to open file");
+        exit(EXIT_FAILURE);
+    }
+
+    const int cores = cpu_cores_count();
+    const long fsize = file_size(file_path);
     long word_count = 0;
 
-    pthread_t *threads_array = (pthread_t *)malloc(sizeof(pthread_t) * cores);
+    pthread_t *threads_array = malloc(sizeof(pthread_t) * cores);
 
-    int file_chunk_size = floor(fsize / cores);
-    int last_chunk_size = file_chunk_size + (fsize % cores);
+    const int file_chunk_size = floor(fsize / cores);
+    const int last_chunk_size = file_chunk_size + fsize % cores;
+
+    printf("file size: %ld, regular chunk: %d, last chunk: %d\n", fsize, file_chunk_size, last_chunk_size);
+
 
     off_t offset = 0;
 
-    for (int i = 0; i < cores; i++)
-    {
-        int byte_read_size = (i == cores - 1) ? last_chunk_size : last_chunk_size;
+    for (int i = 0; i < cores; i++) {
+        const int byte_read_size = i == cores - 1 ? last_chunk_size : file_chunk_size;
 
         threads_array[i] = start_worker_thread(file, offset, byte_read_size);
+        offset += byte_read_size;
     }
 
-    for (int i = 0; i < cores; i++)
-    {
+    for (int j = 0; j < cores; j++) {
         void *thread_local_word_count;
 
-        if (pthread_join(threads_array[i], &thread_local_word_count))
-        {
+        if (pthread_join(threads_array[j], &thread_local_word_count)) {
             perror("Failed to join the thread.");
             exit(-1);
         }
-        word_count += *(long *)thread_local_word_count;
+        word_count += *(long*)thread_local_word_count;
     }
 
     free(threads_array);
 
     return word_count;
-}
-
-int main(int argc, char *argv[])
-{
-    if (!validate_input(argc, argv))
-        return -1;
-
-    return 0;
 }
