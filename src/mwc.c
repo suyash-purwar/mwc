@@ -13,14 +13,21 @@
 
 long file_size(const char *filepath) {
     struct stat file_stat;
-    stat(filepath, &file_stat);
+
+    if (stat(filepath, &file_stat)) {
+        perror("Failed to read file size.");
+        exit(-1);
+    }
 
     return file_stat.st_size;
 }
 
-long count_words(const char *buffer, size_t read_size, const char prev_character, const off_t offset) {
+long count_words(const char *buffer, const size_t read_size, const char prev_character, const off_t offset) {
     char inside_a_word = 0;
     long count = 0;
+
+    if (offset != 0 && !isspace(prev_character))
+        inside_a_word = 1;
 
     for (int i = 0; i < read_size; i++) {
         const char character = buffer[i];
@@ -34,9 +41,6 @@ long count_words(const char *buffer, size_t read_size, const char prev_character
             }
         }
     }
-
-    if (buffer[0] != ' ' && offset != 0 && !isspace(prev_character))
-        count--;
 
     return count;
 }
@@ -59,19 +63,23 @@ void* worker(void *worker_arg) {
     size_t bytes_read = 0;
     long* word_count = calloc(1, sizeof(long));
 
-    FILE *file = args->file;
-    off_t offset = args->offset;
-    const ssize_t chunk_size = args->size;
-    const int fd = fileno(file);
+    if (word_count == NULL) {
+        perror("Failed to allocate memory");
+        exit(-1);
+    }
+
+    const int fd = args -> fd;
+    off_t offset = args -> offset;
+    const ssize_t chunk_size = args -> size;
 
     char prev_buffer_character;
 
     if (offset != 0) {
-        fseek(args->file, offset - 1, SEEK_SET);
-        pread(fd, &prev_buffer_character, 1, offset - 1);
+        if (pread(fd, &prev_buffer_character, 1, offset - 1) == -1) {
+            perror("Failed to read file");
+            exit(-1);
+        }
     }
-
-    fseek(args->file, offset, SEEK_SET);
 
     while (bytes_read < chunk_size) {
         size_t remaining_bytes_to_be_ready = chunk_size - bytes_read;
@@ -79,7 +87,10 @@ void* worker(void *worker_arg) {
                                    ? READ_BUFFER_SIZE
                                    : remaining_bytes_to_be_ready;
 
-        pread(fd, buffer, bytes_to_read, offset);
+        if (pread(fd, buffer, bytes_to_read, offset) == -1) {
+            perror("Failed to read file");
+            exit(-1);
+        }
 
         *word_count += count_words(buffer, bytes_to_read, prev_buffer_character, offset);
 
@@ -93,10 +104,15 @@ void* worker(void *worker_arg) {
     return word_count;
 }
 
-pthread_t start_worker_thread(FILE *file, off_t offset, ssize_t size) {
+pthread_t start_worker_thread(const int fd, const off_t offset, const ssize_t size) {
     FileChunkData *worker_data = malloc(sizeof(FileChunkData));
 
-    worker_data->file = file;
+    if (worker_data == NULL) {
+        perror("Failed to allocate memory");
+        exit(-1);
+    }
+
+    worker_data->fd = fd;
     worker_data->offset = offset;
     worker_data->size = size;
 
@@ -115,9 +131,9 @@ pthread_t start_worker_thread(FILE *file, off_t offset, ssize_t size) {
 }
 
 long mwc(const char *file_path) {
-    FILE *file = fopen(file_path, "r");
+    const int fd = open(file_path, O_RDONLY);
 
-    if (file == NULL) {
+    if (fd == -1) {
         perror("Failed to open file");
         exit(EXIT_FAILURE);
     }
@@ -128,6 +144,11 @@ long mwc(const char *file_path) {
 
     pthread_t *threads_array = malloc(sizeof(pthread_t) * cores);
 
+    if (threads_array == NULL) {
+        perror("Failed to allocate memory");
+        exit(-1);
+    }
+
     const int file_chunk_size = floor(fsize / cores);
     const int last_chunk_size = file_chunk_size + fsize % cores;
 
@@ -136,7 +157,7 @@ long mwc(const char *file_path) {
     for (int i = 0; i < cores; i++) {
         const int byte_read_size = i == cores - 1 ? last_chunk_size : file_chunk_size;
 
-        threads_array[i] = start_worker_thread(file, offset, byte_read_size);
+        threads_array[i] = start_worker_thread(fd, offset, byte_read_size);
         offset += byte_read_size;
     }
 
@@ -148,8 +169,10 @@ long mwc(const char *file_path) {
             exit(-1);
         }
         word_count += *(long*)thread_local_word_count;
+        free(thread_local_word_count);
     }
 
+    close(fd);
     free(threads_array);
 
     return word_count;

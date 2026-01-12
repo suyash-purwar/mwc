@@ -2,7 +2,7 @@
 #define MWC
 
 typedef struct {
-    FILE *file;
+    int fd;
     off_t offset;
     ssize_t size;
 } FileChunkData;
